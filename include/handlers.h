@@ -104,9 +104,4 @@ void handleWifiForget();
  */
 void handleWifiStatus();
 
-// -- NOVO: Handlers para OTA online e informações de firmware --
-void handleFirmwareInfo();
-void handleOtaCheck();
-void handleOtaInstallOnline();
-
 #endif

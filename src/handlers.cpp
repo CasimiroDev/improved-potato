@@ -1,22 +1,18 @@
 #include "config.h"
-#include "globals.h" // Agora inclui FIRMWARE_SERVER_URL e FW_VERSION
+#include "globals.h"
 #include "handlers.h"
 #include "web_ui.h"
 #include "eeprom_module.h"
 #include "artnet_module.h"
 #include "dmx_module.h"
 #include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
-#include <ESP8266httpUpdate.h>
-#include <ArduinoJson.h> // Para JsonDocument
-#include <WiFiClient.h> // -- NOVO: Incluir WiFiClient.h --
 
-// Helper para obter IP do nó (removido, pois não é mais usado em handleRoot)
-// static IPAddress getNodeIP() {
-//     IPAddress ip = WiFi.localIP();
-//     if (ip == IPAddress(0, 0, 0, 0)) ip = WiFi.softAPIP();
-//     return ip;
-// }
+// Helper para obter IP do nó (replicado aqui para evitar dependência)
+static IPAddress getNodeIP() {
+    IPAddress ip = WiFi.localIP();
+    if (ip == IPAddress(0, 0, 0, 0)) ip = WiFi.softAPIP();
+    return ip;
+}
 
 void handleRoot() {
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -36,14 +32,28 @@ void handleRoot() {
     };
 
     sendPgm(HTML_HEAD);
-    sendPgm(HTML_BODY);
+
+    {
+        char dyn[256];
+        String ip   = getNodeIP().toString();
+        const char* mode = (WiFi.status() == WL_CONNECTED) ? "STA" : "AP";
+        snprintf(dyn, sizeof(dyn),
+            "<div class='sub'>IP: <b>%s</b> (%s)"
+            "&nbsp;|&nbsp;Net:<b>%d</b> Sub:<b>%d</b> Uni:<b>%d</b>"
+            "&nbsp;|&nbsp;Porta ArtNet:<b>%d</b></div>",
+            ip.c_str(), mode,
+            artnetNet, artnetSubnet, artnetUniverse, artnetPort);
+        server.sendContent(dyn);
+    }
+
     sendPgm(HTML_JS);
+    sendPgm(HTML_BODY);
 
     server.sendContent("");
 }
 
 void handleData() {
-    static char buf[2048];
+    static char buf[2048];  // Buffer maior para 512 canais
 
     int chStart = 1, chCount = 512;
     if (server.hasArg("start")) chStart = constrain(server.arg("start").toInt(), 1, 512);
@@ -54,7 +64,7 @@ void handleData() {
     uint32_t agoSecs = (dmxRunning) ? ((millis() - lastPacketMs) / 1000UL) : 999;
 
     int n = snprintf(buf, sizeof(buf),
-        "{\"running\":%d,\"cont\":%d,\"val\":%d,\"ago\":%u," // CORREÇÃO: %u para uint32_t
+        "{\"running\":%d,\"cont\":%d,\"val\":%d,\"ago\":%lu,"
         "\"pktOk\":%lu,\"pktFilt\":%lu,"
         "\"net\":%d,\"sub\":%d,\"uni\":%d,\"port\":%d,"
         "\"interval\":%lu,\"s1\":%d,\"s2\":%d,\"s3\":%d,"
@@ -85,50 +95,55 @@ void handleDmxSet() {
     }
     int ch  = server.arg("ch").toInt();
     int val = server.arg("val").toInt();
-
+    
     if (ch < 1 || ch > 512 || val < 0 || val > 255) {
         server.send(400, "application/json", "{\"error\":\"ch 1-512, val 0-255\"}");
         return;
     }
-
+    
     dmxData[ch] = (uint8_t)val;
     lastPacketMs = millis();
     dmxRunning = true;
     dmxSend();
-
+    
     server.sendHeader("Cache-Control", "no-cache");
     server.send(200, "application/json", "{\"ok\":true}");
 }
 
 void handleDmxSetBulk() {
-    // CORREÇÃO: Variável 'startCh' removida, pois não é usada.
-    for (int i = 0; i < server.args(); i++) {
-        String argName = server.argName(i);
-        if (argName.startsWith("ch")) {
-            int ch = argName.substring(2).toInt();
-            int val = server.arg(i).toInt();
-
+    int n = server.arg("n").toInt();
+    if (n < 1 || n > 16) {
+        server.send(400, "application/json", "{\"error\":\"n deve estar entre 1 e 16\"}");
+        return;
+    }
+    
+    for (int i = 0; i < n; i++) {
+        String chKey = "ch" + String(i+1);
+        String valKey = "val" + String(i+1);
+        
+        if (server.hasArg(chKey) && server.hasArg(valKey)) {
+            int ch  = server.arg(chKey).toInt();
+            int val = server.arg(valKey).toInt();
+            
             if (ch >= 1 && ch <= 512 && val >= 0 && val <= 255) {
                 dmxData[ch] = (uint8_t)val;
             }
         }
     }
-
+    
     lastPacketMs = millis();
     dmxRunning = true;
     dmxSend();
-
+    
     server.sendHeader("Cache-Control", "no-cache");
     server.send(200, "application/json", "{\"ok\":true}");
 }
 
-
 void handleConfigJson() {
     char buf[128];
     snprintf(buf, sizeof(buf),
-        "{\"port\":%u,\"net\":%u,\"sub\":%u,\"uni\":%u}", // CORREÇÃO: %u para uint16_t/uint8_t
-        (unsigned int)artnetPort, (unsigned int)artnetNet, (unsigned int)artnetSubnet, (unsigned int)artnetUniverse);
-
+        "{\"port\":%d,\"net\":%d,\"sub\":%d,\"uni\":%d}",
+        artnetPort, artnetNet, artnetSubnet, artnetUniverse);
     server.sendHeader("Cache-Control", "no-cache");
     server.send(200, "application/json", buf);
 }
@@ -244,118 +259,21 @@ void handleTestDmx() {
 }
 
 void handleDevice() {
+    // Stub para configurações do dispositivo (nome, AP password, LED)
+    // Em produção, salvar em EEPROM/SPIFFS
     server.sendHeader("Location", "/");
     server.send(303);
 }
 
 void handleArtnetCfg() {
+    if (server.hasArg("port")) {
+        uint16_t p = (uint16_t)constrain(server.arg("port").toInt(), 1, 65535);
+        if (p != artnetPort) { artnetPort = p; udp.stop(); udp.begin(artnetPort); }
+    }
     if (server.hasArg("net"))      artnetNet      = (uint8_t)constrain(server.arg("net").toInt(),      0, 127);
     if (server.hasArg("subnet"))   artnetSubnet   = (uint8_t)constrain(server.arg("subnet").toInt(),   0,  15);
     if (server.hasArg("universe")) artnetUniverse = (uint8_t)constrain(server.arg("universe").toInt(), 0,  15);
-
-    eepromSave();
-
     sendArtPollReply();
     server.sendHeader("Location", "/");
     server.send(303);
-}
-
-// -- NOVO: Implementação dos handlers para OTA online e informações de firmware --
-
-// Handler para retornar informações do firmware atual
-void handleFirmwareInfo() {
-    char buf[200];
-    snprintf(buf, sizeof(buf),
-        "{\"version\":\"%s\",\"buildDate\":\"%s %s\"}",
-        FW_VERSION, __DATE__, __TIME__);
-
-    server.sendHeader("Cache-Control", "no-cache");
-    server.send(200, "application/json", buf);
-}
-
-// Handler para verificar por atualizações online
-void handleOtaCheck() {
-    if (WiFi.status() != WL_CONNECTED) {
-        server.send(200, "application/json", "{\"error\":\"Dispositivo não conectado ao WiFi\"}");
-        return;
-    }
-
-    WiFiClient client; // -- NOVO: Crie uma instância de WiFiClient --
-    HTTPClient http;
-    String url = String(FIRMWARE_SERVER_URL) + "version.json";
-
-    // -- CORREÇÃO: Use o cliente na chamada http.begin() --
-    http.begin(client, url); // Agora passa o WiFiClient como primeiro argumento
-
-    int httpCode = http.GET();
-
-    if (httpCode == HTTP_CODE_OK) {
-        String payload = http.getString();
-        JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, payload);
-
-        if (error) {
-            server.send(200, "application/json", "{\"error\":\"Falha ao parsear JSON do servidor\"}");
-        } else {
-            String latestVersion = doc["version"].as<String>();
-            String latestUrl     = doc["url"].as<String>();
-
-            char buf[256];
-            snprintf(buf, sizeof(buf),
-                "{\"latestVersion\":\"%s\",\"latestUrl\":\"%s\"}",
-                latestVersion.c_str(), latestUrl.c_str());
-            server.send(200, "application/json", buf);
-        }
-    } else {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "{\"error\":\"Erro HTTP: %d\"}", httpCode);
-        server.send(200, "application/json", buf);
-    }
-    http.end();
-}
-
-// Handler para iniciar a atualização online
-void handleOtaInstallOnline() {
-    Serial.println("handleOtaInstallOnline chamado.");
-    if (!server.hasArg("url")) {
-        Serial.println("Erro: Argumento 'url' ausente.");
-        server.send(400, "application/json", "{\"error\":\"URL do firmware ausente\"}");
-        return;
-    }
-    String firmwareUrl = server.arg("url");
-    Serial.print("URL recebida: ");
-    Serial.println(firmwareUrl);
-
-    if (firmwareUrl.length() == 0) {
-        Serial.println("Erro: URL do firmware vazia.");
-        server.send(400, "application/json", "{\"error\":\"URL do firmware vazia\"}");
-        return;
-    }
-
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("Erro: WiFi não conectado.");
-        server.send(200, "application/json", "{\"error\":\"Dispositivo não conectado ao WiFi\"}");
-        return;
-    }
-
-    server.send(200, "application/json", "{\"ok\":true}");
-    delay(100);
-
-    Serial.println("Iniciando atualização OTA de: " + firmwareUrl);
-
-    // CORREÇÃO: Crie uma instância de WiFiClient e passe-a para ESPhttpUpdate.update()
-    WiFiClient client;
-    t_httpUpdate_return ret = ESPhttpUpdate.update(client, firmwareUrl);
-
-    switch (ret) {
-        case HTTP_UPDATE_FAILED:
-            Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
-            break;
-        case HTTP_UPDATE_NO_UPDATES:
-            Serial.println("HTTP_UPDATE_NO_UPDATES");
-            break;
-        case HTTP_UPDATE_OK:
-            Serial.println("HTTP_UPDATE_OK");
-            break;
-    }
 }

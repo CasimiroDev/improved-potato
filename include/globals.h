@@ -57,11 +57,4 @@ struct WifiCreds {
 };
 extern WifiCreds wifiCreds;
 
-// -- NOVO: URL do seu servidor de firmware (em globals.h) --
-extern const char* FIRMWARE_SERVER_URL; // Declarar como extern
-// -- NOVO: Defina a versão do firmware aqui (em globals.h ou config.h) --
-#ifndef FW_VERSION
-#define FW_VERSION "v0.0.1" // Versão padrão se não definida
-#endif
-
 #endif

@@ -30,18 +30,6 @@ Arquitetura modular:
 #include "handlers.h"
 #include "web_ui.h"
 
-// -- NOVO: Inclusões para OTA online e JSON --
-#include <ESP8266HTTPClient.h>
-#include <ESP8266httpUpdate.h>
-#include <ArduinoJson.h>
-
-// -- NOVO: Definição da URL do seu servidor de firmware (apenas em main.cpp ou um .cpp) --
-// Remova a linha 'const char* FIRMWARE_SERVER_URL = "http://seu-site.com/firmware/";' daqui
-// e coloque-a em um arquivo .cpp (como main.cpp) para que seja definida UMA VEZ.
-// Se você a definiu em config.h, então remova-a de main.cpp.
-// Se você a declarou como 'extern' em globals.h, então a definição deve estar em um .cpp:
-const char* FIRMWARE_SERVER_URL = "http://seu-site.com/firmware/"; // Definição real
-
 // ===========================================================================
 //  DEFINIÇÕES DE VARIÁVEIS GLOBAIS
 // ===========================================================================
@@ -94,7 +82,7 @@ void setup() {
     // Inicializa UDP para ArtNet
     udp.begin(artnetPort);
 
-    // Setup OTA para upload manual (existente)
+    // Setup OTA
     otaServer.setup(&server, "/ota-update");
 
     // Registra handlers HTTP
@@ -112,12 +100,6 @@ void setup() {
     server.on("/wifi-forget",      HTTP_GET,  handleWifiForget);
     server.on("/wifi-status",      HTTP_GET,  handleWifiStatus);
     server.on("/reset-wifi",       HTTP_GET,  handleWifiForget);
-
-    // -- NOVO: Handlers para OTA online e informações de firmware --
-    server.on("/firmware-info",    HTTP_GET,  handleFirmwareInfo);
-    server.on("/ota-check",        HTTP_GET,  handleOtaCheck);
-    server.on("/ota-install-online", HTTP_POST, handleOtaInstallOnline);
-
     server.begin();
 
     // mDNS
